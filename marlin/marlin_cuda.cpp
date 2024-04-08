@@ -24,7 +24,6 @@ int marlin_cuda(
   const void* A,
   const void* B,
         void* C,
-        void* s,
   int prob_m,
   int prob_n,
   int prob_k,
@@ -45,7 +44,6 @@ void mul(
   const torch::Tensor& A,
   const torch::Tensor& B,
         torch::Tensor& C,
-  const torch::Tensor& s,
         torch::Tensor& workspace,
   int thread_k = -1,
   int thread_n = -1,
@@ -55,9 +53,15 @@ void mul(
   int prob_m = A.size(0);
   int prob_n = C.size(1);
   int prob_k = A.size(1);
-  int groupsize = (s.size(0) == 1) ? -1 : prob_k / s.size(0);
-  if (groupsize != -1 && groupsize * s.size(0) != prob_k)
-    AT_ERROR("k=", prob_k, " not compatible with ", s.size(0), " groups.");
+  int groupsize;
+if (s.defined()) {
+    groupsize = (s.size(0) == 1) ? -1 : prob_k / s.size(0);
+    if (groupsize != -1 && groupsize * s.size(0) != prob_k) {
+        AT_ERROR("k=", prob_k, " not compatible with ", s.size(0), " groups.");
+    }
+} else {
+    groupsize = -1;
+}
   if (workspace.numel() < prob_n / 128 * max_par)
     AT_ERROR("workspace must be of size at least ", prob_n / 128 * max_par, ".");
   int dev = A.get_device();
@@ -65,7 +69,6 @@ void mul(
     A.data_ptr(),
     B.data_ptr(),
     C.data_ptr(),
-    s.data_ptr(),
     prob_m, prob_n, prob_k,
     workspace.data_ptr(),
     groupsize,
@@ -89,5 +92,5 @@ void mul(
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("mul", &mul, "Marlin FP16xINT4 matmul.");
+  m.def("mul", &mul, "Marlin BF16xBF16 matmul.");
 }
