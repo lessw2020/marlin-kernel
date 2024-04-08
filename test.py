@@ -13,8 +13,49 @@ torch.random.manual_seed(seed)
 
 DEV = torch.device('cuda:0')
 
+# updated gen quant4 for bf16...
+def gen_quant4(m, n, groupsize=-1, dtype=torch.bfloat16):
+    tile = 16
+    w = torch.randn((m, n), dtype=dtype, device=DEV)
 
-def gen_quant4(m, n, groupsize=-1):
+    def reshape(w):
+        if groupsize != -1:
+            w = w.reshape((-1, groupsize, n))
+            w = w.permute(1, 0, 2)
+            w = w.reshape((groupsize, -1))
+        return w
+
+    def reshape_back(w):
+        if groupsize != -1:
+            w = w.reshape((groupsize, -1, n))
+            w = w.permute(1, 0, 2)
+            w = w.reshape((m, n)).contiguous()
+        return w
+
+    w = reshape(w)
+    ref = reshape_back(w)
+
+    linear = nn.Linear(m, n)
+    linear.weight.data = ref.t()
+
+    layer = marlin.Layer(256, 256, groupsize=groupsize)
+    if groupsize == -1:
+        groupsize = m
+
+    layer.k = m
+    layer.n = n
+    layer.groupsize = groupsize
+    layer.B = torch.empty((m // 16, n * 16 // 8), dtype=torch.int, device=DEV)
+    layer.s = torch.empty((m // groupsize, n), dtype=dtype, device=DEV)
+
+    layer.pack(linear, torch.ones_like(layer.s))
+
+    q = layer.B
+    s = layer.s
+
+    return ref, q, s
+
+'''def gen_quant4(m, n, groupsize=-1):
     tile = 16
     maxq = 2 ** 4 - 1
     w = torch.randn((m, n), dtype=torch.half, device=DEV)
@@ -52,10 +93,11 @@ def gen_quant4(m, n, groupsize=-1):
     q = layer.B
     s = layer.s
     return ref, q, s
+'''
 
 class Test(unittest.TestCase):
 
-    def run_problem(self, m, n, k, thread_k, thread_n, groupsize=-1):
+    def run_problem_orig(self, m, n, k, thread_k, thread_n, groupsize=-1):
         print('% 5d % 6d % 6d % 4d % 4d % 4d' % (m, n, k, thread_k, thread_n, groupsize))
         A = torch.randn((m, k), dtype=torch.half, device=DEV)
         B_ref, B, s = gen_quant4(k, n, groupsize=groupsize)
@@ -65,6 +107,30 @@ class Test(unittest.TestCase):
         marlin.mul(A, B, C, s, workspace, thread_k, thread_n, -1)
         torch.cuda.synchronize()
         self.assertLess(torch.mean(torch.abs(C - C_ref)) / torch.mean(torch.abs(C_ref)), 0.001)
+
+    def run_problem_bf16(self, m, n, k, thread_k, thread_n, groupsize=-1):
+    print('% 5d % 6d % 6d % 4d % 4d % 4d' % (m, n, k, thread_k, thread_n, groupsize))
+
+    # Create input tensors using bfloat16 data type
+    A = torch.randn((m, k), dtype=torch.bfloat16, device=DEV)
+    B_ref, B, s = gen_quant4(k, n, groupsize=groupsize, dtype=torch.bfloat16)
+
+    # Create output tensor using bfloat16 data type
+    C = torch.zeros((m, n), dtype=torch.bfloat16, device=DEV)
+
+    # Compute reference output using bfloat16 tensors
+    C_ref = torch.matmul(A, B_ref)
+
+    # Create workspace tensor using bfloat16 data type
+    workspace = torch.zeros(n // 128 * 16, dtype=torch.bfloat16, device=DEV)
+
+    # Call marlin.mul using bfloat16 tensors
+    marlin.mul(A, B, C, s, workspace, thread_k, thread_n, -1)
+
+    torch.cuda.synchronize()
+
+    self.assertLess(torch.mean(torch.abs(C - C_ref)) / torch.mean(torch.abs(C_ref)), 0.001)
+
 
     def test_tiles(self):
         print()
