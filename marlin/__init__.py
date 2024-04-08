@@ -20,7 +20,7 @@ import torch.nn as nn
 
 import marlin_cuda
 
-def mul(A, B, C, s, workspace, thread_k=-1, thread_n=-1, sms=-1, max_par=16):
+'''def mul(A, B, C, s, workspace, thread_k=-1, thread_n=-1, sms=-1, max_par=16):
     """Marlin FP16xINT4 multiply; can be used within `torch.compile`.
     @A: `torch.half` input matrix of shape `(m, k)` in standard row-major layout
     @B: `torch.int` weight matrix of original shape `(k, n)` in Marlin format; see `Layer.pack()`
@@ -33,7 +33,10 @@ def mul(A, B, C, s, workspace, thread_k=-1, thread_n=-1, sms=-1, max_par=16):
     @max_par: maximum number of batch 64 problems to solve in parallel for large input sizes
     """
     marlin_cuda.mul(A, B, C, s, workspace, thread_k, thread_n, sms, max_par)
+'''
 
+def mul(A, B, C, workspace, thread_k=-1, thread_n=-1, sms=-1, max_par=16):
+    marlin_cuda.mul(A, B, C, workspace, thread_k, thread_n, sms, max_par)
 
 # Precompute permutations for Marlin weight and scale shuffling
 
@@ -57,17 +60,50 @@ def _get_perms():
     interleave = np.array([0, 2, 4, 6, 1, 3, 5, 7])
     perm = perm.reshape((-1, 8))[:, interleave].ravel()
     perm = torch.from_numpy(perm)
-    scale_perm = []
-    for i in range(8):
-        scale_perm.extend([i + 8 * j for j in range(8)])
-    scale_perm_single = []
-    for i in range(4):
-        scale_perm_single.extend([2 * i + j for j in [0, 1, 8, 9, 16, 17, 24, 25]])
-    return perm, scale_perm, scale_perm_single
+    # scale_perm = []
+    # for i in range(8):
+    #    scale_perm.extend([i + 8 * j for j in range(8)])
+    #scale_perm_single = []
+    #for i in range(4):
+    #    scale_perm_single.extend([2 * i + j for j in [0, 1, 8, 9, 16, 17, 24, 25]])
+    return perm #, scale_perm, scale_perm_single
 
-_perm, _scale_perm, _scale_perm_single = _get_perms()
+_perm = _get_perms() # was _scale_perm, _scale_perm_single
 
+class Layer(nn.Module):
+    """PyTorch compatible Marlin layer; bfloat16 linear layer without bias."""
 
+    def __init__(self, infeatures, outfeatures, groupsize=-1):
+        """Create an empty Marlin layer.
+
+        @infeatures: number of input features (must be divisible by 128)
+        @outfeatures: number of output features (must be divisible by 256)
+        @groupsize: grouping size (must be -1 or 128)
+        """
+        super().__init__()
+        if groupsize not in [-1, 128]:
+            raise ValueError('Only groupsize -1 and 128 are supported.')
+        if infeatures % 128 != 0 or outfeatures % 256 != 0:
+            raise ValueError('`infeatures` must be divisible by 128 and `outfeatures` by 256.')
+        if groupsize == -1:
+            groupsize = infeatures
+        if infeatures % groupsize != 0:
+            raise ValueError('`infeatures` must be divisible by `groupsize`.')
+
+        self.k = infeatures
+        self.n = outfeatures
+        self.groupsize = groupsize
+
+        self.register_buffer('B', torch.empty((self.k, self.n), dtype=torch.bfloat16))
+
+        # 128 is currently the minimum `tile_n`, hence it gives the maximum workspace size; 16 is the default `max_par`
+        self.register_buffer('workspace', torch.zeros(self.n // 128 * 16, dtype=torch.bfloat16), persistent=False)
+
+    def forward(self, A):
+        C = torch.empty(A.shape[:-1] + (self.B.shape[1],), dtype=A.dtype, device=A.device)
+        mul(A.view((-1, A.shape[-1])), self.B, C.view((-1, C.shape[-1])), self.workspace)
+        return C
+'''
 class Layer(nn.Module):
     """PyTorch compatible Marlin layer; 4-bit (symmetric grouped) linear layer without bias."""
 
@@ -98,7 +134,7 @@ class Layer(nn.Module):
         C = torch.empty(A.shape[:-1] + (self.s.shape[1],), dtype=A.dtype, device=A.device)
         mul(A.view((-1, A.shape[-1])), self.B, C.view((-1, C.shape[-1])), self.s, self.workspace)
         return C
-
+    '''
     '''
     def pack(self, linear, scales):
         """Pack a fake-quantized linear layer into this actual Marlin representation.
