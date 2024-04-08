@@ -97,7 +97,7 @@ def gen_quant4(m, n, groupsize=-1, dtype=torch.bfloat16):
 
 class Test(unittest.TestCase):
 
-    def run_problem_orig(self, m, n, k, thread_k, thread_n, groupsize=-1):
+    '''def run_problem_orig(self, m, n, k, thread_k, thread_n, groupsize=-1):
         print('% 5d % 6d % 6d % 4d % 4d % 4d' % (m, n, k, thread_k, thread_n, groupsize))
         A = torch.randn((m, k), dtype=torch.half, device=DEV)
         B_ref, B, s = gen_quant4(k, n, groupsize=groupsize)
@@ -107,29 +107,30 @@ class Test(unittest.TestCase):
         marlin.mul(A, B, C, s, workspace, thread_k, thread_n, -1)
         torch.cuda.synchronize()
         self.assertLess(torch.mean(torch.abs(C - C_ref)) / torch.mean(torch.abs(C_ref)), 0.001)
+    '''
+    # bf16 test
+    def run_problem(self, m, n, k, thread_k, thread_n, groupsize=-1):
+        print('% 5d % 6d % 6d % 4d % 4d % 4d' % (m, n, k, thread_k, thread_n, groupsize))
 
-    def run_problem_bf16(self, m, n, k, thread_k, thread_n, groupsize=-1):
-    print('% 5d % 6d % 6d % 4d % 4d % 4d' % (m, n, k, thread_k, thread_n, groupsize))
+        # Create input tensors using bfloat16 data type
+        A = torch.randn((m, k), dtype=torch.bfloat16, device=DEV)
+        B_ref, B, s = gen_quant4(k, n, groupsize=groupsize, dtype=torch.bfloat16)
 
-    # Create input tensors using bfloat16 data type
-    A = torch.randn((m, k), dtype=torch.bfloat16, device=DEV)
-    B_ref, B, s = gen_quant4(k, n, groupsize=groupsize, dtype=torch.bfloat16)
+        # Create output tensor using bfloat16 data type
+        C = torch.zeros((m, n), dtype=torch.bfloat16, device=DEV)
 
-    # Create output tensor using bfloat16 data type
-    C = torch.zeros((m, n), dtype=torch.bfloat16, device=DEV)
+        # Compute reference output using bfloat16 tensors
+        C_ref = torch.matmul(A, B_ref)
 
-    # Compute reference output using bfloat16 tensors
-    C_ref = torch.matmul(A, B_ref)
+        # Create workspace tensor using bfloat16 data type
+        workspace = torch.zeros(n // 128 * 16, dtype=torch.bfloat16, device=DEV)
 
-    # Create workspace tensor using bfloat16 data type
-    workspace = torch.zeros(n // 128 * 16, dtype=torch.bfloat16, device=DEV)
+        # Call marlin.mul using bfloat16 tensors
+        marlin.mul(A, B, C, s, workspace, thread_k, thread_n, -1)
 
-    # Call marlin.mul using bfloat16 tensors
-    marlin.mul(A, B, C, s, workspace, thread_k, thread_n, -1)
+        torch.cuda.synchronize()
 
-    torch.cuda.synchronize()
-
-    self.assertLess(torch.mean(torch.abs(C - C_ref)) / torch.mean(torch.abs(C_ref)), 0.001)
+        self.assertLess(torch.mean(torch.abs(C - C_ref)) / torch.mean(torch.abs(C_ref)), 0.001)
 
 
     def test_tiles(self):

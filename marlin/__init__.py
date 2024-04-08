@@ -35,7 +35,7 @@ def mul(A, B, C, s, workspace, thread_k=-1, thread_n=-1, sms=-1, max_par=16):
     marlin_cuda.mul(A, B, C, s, workspace, thread_k, thread_n, sms, max_par)
 
 
-# Precompute permutations for Marlin weight and scale shuffling 
+# Precompute permutations for Marlin weight and scale shuffling
 
 def _get_perms():
     perm = []
@@ -99,11 +99,12 @@ class Layer(nn.Module):
         mul(A.view((-1, A.shape[-1])), self.B, C.view((-1, C.shape[-1])), self.s, self.workspace)
         return C
 
+    '''
     def pack(self, linear, scales):
         """Pack a fake-quantized linear layer into this actual Marlin representation.
         @linear: fake-quantized `torch.nn.Linear` layer to convert (must be of type `torch.half`)
         @scales: corresponding quantization scales of shape `(infeatures, groups)`
-        """ 
+        """
         if linear.weight.dtype != torch.half:
             raise ValueError('Only `torch.half` weights are supported.')
         tile = 16
@@ -138,11 +139,34 @@ class Layer(nn.Module):
         q = torch.from_numpy(q.astype(np.int32)).to(w.device)
         self.B[:, :] = q.to(self.B.device)
         self.s[:, :] = s.to(self.s.device)
+    '''
+def pack(self, linear):
+    """Convert a linear layer into a grouped Marlin representation.
+    The weights are reshaped based on the groupsize if it is not equal
+    to self.k, and then assigned to the self.B attribute.
 
+    @linear: `torch.nn.Linear` layer to convert (must be of type `torch.bfloat16`)
+    """
+    if linear.weight.dtype != torch.bfloat16:
+        raise ValueError('Only `torch.bfloat16` weights are supported.')
+
+    w = linear.weight.data.t()
+
+    if self.groupsize != self.k:
+        w = w.reshape((-1, self.groupsize, self.n))
+        w = w.permute(1, 0, 2)
+        w = w.reshape((self.groupsize, -1))
+
+    if self.groupsize != self.k:
+        w = w.reshape((self.groupsize, -1, self.n))
+        w = w.permute(1, 0, 2)
+        w = w.reshape((self.k, self.n)).contiguous()
+
+    self.B = w.to(self.B.device)
 
 def replace_linear(module, name_filter=lambda n: True, groupsize=-1, name=''):
     """Recursively replace all `torch.nn.Linear` layers by empty Marlin layers.
-    @module: top-level module in which to perform the replacement 
+    @module: top-level module in which to perform the replacement
     @name_filter: lambda indicating if a layer should be replaced
     @groupsize: marlin groupsize
     @name: root-level name
