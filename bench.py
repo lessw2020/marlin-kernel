@@ -60,13 +60,16 @@ elif '3090' in gpu:
     SMS = 82
 elif 'A6000' in gpu:
     SMS = 84
+elif 'H100' in gpu:
+    SMS = 132
 else:
     SMS = -1
 
+
 MODELS = {
-    'ideal': [
-        (4 * 256 * SMS, 256 * SMS)
-    ],
+    # 'ideal': [
+    #     (4 * 256 * SMS, 256 * SMS)
+    # ],
     'Llama7B': [
         (4096, 3 * 4096),
         (4096, 4096),
@@ -113,15 +116,17 @@ for groupsize in [-1, 128] if ALL else [128]:
         for batch in batchsizes:
             if not ALL and model != 'ideal' and batch != 16:
                 continue
-            tot_q = {'s': 0, 'TFLOP/s': 0, 'GB/s': 0, 'speedup': 0} 
+            tot_q = {'s': 0, 'TFLOP/s': 0, 'GB/s': 0, 'speedup': 0}
             for layer in layers:
                 A, B, C, B_ref, s = get_problem(batch, layer[1], layer[0], groupsize)
                 res_d = benchmark_dense(A, B_ref, C)
                 if model == 'ideal' and batch == 16:
+                    print("here")
                     # This is a special case constructed to be optimal for a thread-shape different than the default one
                     res_q = benchmark_quant(A, B, C, s, 64, 256, SMS)
                 else:
-                    res_q = benchmark_quant(A, B, C, s, -1, -1, SMS)
+                    # res_q = benchmark_quant(A, B, C, s, -1, -1, SMS)
+                    res_q = benchmark_quant(A, B, C, s, 64, 256, SMS)
                 res_q['speedup'] = res_d['s'] / res_q['s']
                 tot_q['s'] += res_q['s']
                 for k in tot_q:

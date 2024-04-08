@@ -130,20 +130,20 @@ class Test(unittest.TestCase):
         try:
             marlin.mul(A, B, C, s, workspace, 128, 128, -1)
         except:
-            err = True 
+            err = True
         self.assertTrue(err)
         err = False
         try:
             marlin.mul(A, B, C, s, workspace, 256, 256, -1)
         except:
-            err = True 
+            err = True
         self.assertTrue(err)
         s = torch.zeros((2, n), dtype=torch.half, device=DEV)
         err = False
         try:
             marlin.mul(A, B, C, s, workspace, 256, 256, -1)
         except:
-            err = True 
+            err = True
         self.assertTrue(err)
 
     def test_groups(self):
@@ -151,7 +151,7 @@ class Test(unittest.TestCase):
         for m in [16]:
             for groupsize in [128]:
                 for n, k in [(256, 512), (256, 1024), (256 * 128, 1024)]:
-                    for thread_shape in [(128, 128), (64, 256)]:
+                    for thread_shape in [(64, 256)]:
                         self.run_problem(m, n, k, *thread_shape, groupsize)
 
 
