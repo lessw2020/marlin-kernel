@@ -44,11 +44,14 @@ using I4 = Vec<int, 4>;
 
 // Matrix fragments for tensor core instructions; their precise layout is documented here:
 // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#matrix-fragments-for-mma-m16n8k16-with-floating-point-type
-using FragA = Vec<half2, 4>;
-using FragB = Vec<half2, 2>;
+//using FragA = Vec<half2, 4>;
+//using FragB = Vec<half2, 2>;
+using FragA = Vec<bfloat162, 4>;  // 4 vectors, each holding 2 bf16
+using FragB = Vec<bfloat162, 2>;  // 2 vectors, each holding 2 bf16
 using FragC = Vec<float, 4>;
-using FragS = Vec<half2, 1>; // quantization scales
+//using FragS = Vec<half2, 1>; // quantization scales
 
+// this will copy up to 8 bfloat16
 // Predicated asynchronous global->shared copy; used for inputs A where we apply predication to handle batchsizes that
 // are not multiples of 16.
 __device__ inline void cp_async4_pred(void* smem_ptr, const void* glob_ptr, bool pred = true) {
@@ -63,6 +66,8 @@ __device__ inline void cp_async4_pred(void* smem_ptr, const void* glob_ptr, bool
   );
 }
 
+// basically hints that the b values are used only once, not expected to be reused.
+//copies up to 8 bf16 (bytes = 16)
 // Asynchronous global->shared copy with a cache hint indicating that the values may be evicted immediately; used for
 // quantized weights B, which are only accessed precisely once and should thus not pollute the L2 cache which we need
 // for inputs A and outputs C.
@@ -123,6 +128,10 @@ __device__ inline void mma(const FragA& a_frag, const FragB& frag_b, FragC& frag
     );
 }
 
+// no change below
+//The .b16 modifier in the ldmatrix instruction specifies a 16-bit type,
+//which includes both half-precision (FP16) and bfloat16.
+
 // Instruction for loading a full 16x16 matrix fragment of operand A from shared memory, directly in tensor core layout.
 __device__ inline void ldsm4(FragA& frag_a, const void* smem_ptr) {
   uint32_t* a = reinterpret_cast<uint32_t*>(&frag_a);
@@ -132,6 +141,7 @@ __device__ inline void ldsm4(FragA& frag_a, const void* smem_ptr) {
     : "=r"(a[0]), "=r"(a[1]), "=r"(a[2]), "=r"(a[3]) : "r"(smem)
   );
 }
+
 
 // Lookup-table based 3-input logical operation; explicitly used for dequantization as the compiler does not seem to
 // automatically recognize it in all cases.
@@ -144,7 +154,7 @@ __device__ inline int lop3(int a, int b, int c) {
   );
   return res;
 }
-
+/*
 // Efficiently dequantize an int32 value into a full B-fragment of 4 fp16 values.
 // We mostly follow the strategy in the link below, with some small changes:
 // https://github.com/NVIDIA/FasterTransformer/blob/main/src/fastertransformer/cutlass_extensions/include/cutlass_extensions/interleaved_numeric_conversion.h
@@ -177,6 +187,8 @@ __device__ inline void scale(FragB& frag_b, FragS& frag_s, int i) {
   frag_b[0] = __hmul2(frag_b[0], s);
   frag_b[1] = __hmul2(frag_b[1], s);
 }
+*/
+
 
 // Wait until barrier reaches `count`, then lock for current threadblock.
 __device__ inline void barrier_acquire(int* lock, int count) {
@@ -265,16 +277,24 @@ __global__ void Marlin(
 
   // Compute all information about the current slice which is required for synchronization.
   auto init_slice = [&] () {
+    // num iters per current slice (iters * blockidx - current offset)
     slice_iters = iters * (blockIdx.x + 1) - (k_tiles * slice_col_par + slice_row);
+    //bounds check - negative or can't exceed total tiles * parallel factor
     if (slice_iters < 0 || slice_col_par >= n_tiles * parallel)
       slice_iters = 0;
+    // nothing to do ... return
     if (slice_iters == 0)
       return;
+    // adjust slice_iter to not exceed tiles in k dimension (k_tiles)
     if (slice_row + slice_iters > k_tiles)
       slice_iters = k_tiles - slice_row;
+
     slice_count = 1;
     slice_idx = 0;
+    //calc first col index based on num iters and k tiles per iter
     int col_first = iters * ceildiv(k_tiles * slice_col_par, iters);
+
+// determine col offset and slice count
     if (col_first <= k_tiles * (slice_col_par + 1)) {
       int col_off = col_first - k_tiles * slice_col_par;
       slice_count = ceildiv(k_tiles - col_off, iters);
@@ -289,6 +309,7 @@ __global__ void Marlin(
           slice_idx--;
       }
     }
+  // update A and C pointers and locks when we hit n_tiles, reset slice col to 0
     if (slice_col == n_tiles) {
       A += 16 * thread_m_blocks * prob_k / 8;
       C += 16 * thread_m_blocks * prob_n / 8;
@@ -296,6 +317,7 @@ __global__ void Marlin(
       slice_col = 0;
     }
   };
+  // execute things based on above results
   init_slice();
 
   int a_gl_stride = prob_k / 8; // stride of the A matrix in global memory
@@ -421,6 +443,7 @@ __global__ void Marlin(
         cp_async4_stream(&sh_b_stage[b_sh_wr_delta * i + b_sh_wr], B_ptr[i]);
         B_ptr[i] += b_gl_rd_delta_o;
       }
+      /*
       // Only fetch scales if this tile starts a new group
       if (group_blocks != -1 && pipe % (group_blocks / thread_k_blocks) == 0) {
         int4* sh_s_stage = sh_s + s_sh_stage * pipe;
@@ -428,6 +451,7 @@ __global__ void Marlin(
           cp_async4_stream(&sh_s_stage[s_sh_wr], &s[s_gl_rd]);
         s_gl_rd += s_gl_rd_delta;
       }
+      */
     }
     // Insert a fence even when we are winding down the pipeline to ensure that waiting is also correct at this point.
     cp_async_fence();
